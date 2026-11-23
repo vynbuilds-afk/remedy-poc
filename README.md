@@ -1,39 +1,39 @@
 # Remedy PoC — Valantis + AUTOfinance
 
-Runnable Foundry proofs of concept for two bug bounty reports that were
-closed as Spam for "No PoC". The PoCs existed when the reports were filed
-but were not attached to the submissions; they are published here so the
-triager can download and run them.
+Runnable Foundry proofs of concept for two Remedy bug bounty reports that
+were closed as Spam for "No PoC". The PoCs existed when the reports were
+filed but were not attached to the submissions; they are published here so
+the triager can clone the repo, run one command per finding, and watch the
+exploit happen.
 
-> Note: this repo contains the clean project layout (one folder per
-> finding). The raw zip archives were replaced by the extracted projects so
-> each PoC can be browsed and run directly.
+> Note: this repo holds the clean project layout (one folder per finding).
+> The raw zip archives were replaced by the extracted projects so each PoC
+> can be browsed and run directly.
 
-## Contents
+## Findings
 
-- `valantis-finding-02/` — Valantis STEXAMM dust-donation fee-tier bypass (High)
-- `autofinance-finding-03/` — AUTOfinance AutopoolETH.recover() vault drain (High)
+- **Valantis — dust donation flips the swap fee tier** ([valantis-finding-02/](valantis-finding-02/)) — **High**. A 1-wei WETH donation drops the fee on a 100 ETH swap from 500 to 200 bips; the attacker gains **+2.9979 ETH**.
+- **AUTOfinance — AutopoolETH.recover() drains the whole vault** ([autofinance-finding-03/](autofinance-finding-03/)) — **High**. The TOKEN_RECOVERY_MANAGER drains **100.0000000000001 WETH to 0 WETH**; the vault stays live and unpaused, and totalAssets() still reports the full amount.
 
-## Valantis — dust donation flips the swap fee tier
+## Reproduce
 
-STEXAMM reserves are the raw token `balanceOf`, so a 1-wei WETH donation
-made when the post-swap reserves sit exactly at a stepwise fee-tier boundary
-drops the fee charged on the entire swap from 500 bips to 200 bips.
-Measured on a 100 ETH swap: baseline 500 bips, 95.0028 ETH out; after the
-1-wei donation, 200 bips, 98.0007 ETH out — net +2.9979 ETH for the attacker.
+```bash
+git clone https://github.com/vynbuilds-afk/remedy-poc.git
+cd remedy-poc/valantis-finding-02 && forge test --match-contract WorkerCPoC -vvvv   # 11 passed
+cd ../autofinance-finding-03 && forge test --match-contract AutopoolRecoverPoC -vvvv  # 3 passed
+```
 
-Run: `cd valantis-finding-02 && forge test` (forge 1.10.0, solc 0.8.38).
-All 11 tests pass.
+Each test logs INITIAL vs FINAL state (fee tier and balances before and
+after), so the before/after numbers are the proof. See each folder's README
+for the full write-up.
 
-## AUTOfinance — AutopoolETH.recover() drains the whole vault
+## Targets
 
-`AutopoolETH.recover()` lets the TOKEN_RECOVERY_MANAGER drain the entire
-vault, because the tracked-asset exclusion guard in `Autopool4626.recover`
-was commented out in commit 9a19d48e (2024-05-28) and never restored.
-Measured: a vault holding 100.0000000000001 WETH is drained to 0 WETH by a
-single `recover()` call. The vault stays live and unpaused afterwards, and
-`totalAssets()` still reports the full amount.
+- Valantis STEX — scope repo commit `27b5c74` (STEXAMM + stHYPEWithdrawalModule)
+- Tokemak v2-core-pub — scope repo commit `de163d5a` (AutopoolETH, Autopool4626)
 
-Run: `cd autofinance-finding-03 && forge test` (forge 1.10.0, solc 0.8.17).
-All 3 tests pass. A second, independent PoC of the same drain
-(`RecoverDrainPoC.t.sol`, 3/3 pass) is not included here.
+## Environment
+
+- forge 1.10.0. Valantis PoC verified with solc 0.8.38; AUTOfinance PoC pins
+  solc 0.8.17 in foundry.toml. No network needed — all contracts are vendored
+  in each folder (src/ byte-identical, lib/ minimal transitive imports only).
